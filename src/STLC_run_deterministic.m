@@ -1,4 +1,4 @@
-function [Sys, params] = STLC_run_deterministic(Sys, controller)
+ function [Sys, params] = STLC_run_deterministic(Sys, controller)
 % STLC_run_deterministic    runs a receding horizon control problem 
 %                           for the system described by Sys, using the
 %                           provided controller optimizer object, using the 
@@ -43,8 +43,12 @@ if isempty(Sys.Wref)
 end
 Wref = Sys.Wref;
 for iwx=1:nw
-    Wn(iwx,:) = interp1( time , Wref(iwx,:)', time_d)';
+    Wrefn(iwx,:) = interp1( time , Wref(iwx,:)', time_d)';
 end
+Wn = Wrefn;
+% for iwx=1:nw
+%     Wn(iwx,:) = interp1( time , Wref(iwx,:)', time_d)';
+% end
 
 
 %% Make data nb_stages times longer
@@ -129,7 +133,8 @@ while (time_d(end)+ts< time(end))
     
     %% update state        
     u_new = Upred(:,i_transient);
-    w_new = Wn(:,i_transient);
+    w_new = compute_w();
+%     w_new = Wn(:,i_transient);
     [x_new, y_new] = system_step(Sys, x0, u_new, w_new);
     i_past =  i_past+1;
     params{end+1} = {i_transient,time_d,donen,pn,Xn,Un,Wn};
@@ -149,7 +154,7 @@ while (time_d(end)+ts< time(end))
 end
 
     function compute_input()
-        [sol_control, errorflag1] = controller{{donen,pn,Xn,Un,Wn}};
+        [sol_control, errorflag1] = controller{{donen,Xn,Un,x0,Wrefn}};
         if(errorflag1==0)  % found a good control
             %disp(['Yalmip: ' yalmiperror(errorflag1)])
             Upred = sol_control{1};
@@ -183,25 +188,32 @@ end
         if (i_past>= L+1)
             time_d = time_d+ts; % move forward one time step
         end
-        
+        for wx=1:nw
+            Wrefn(wx,:) = interp1( time , Wref(wx,:)', time_d)';
+        end
+        Wn = Wrefn;
         if i_transient<L
             donen(1:i_transient-1) = 1;  % we reuse what has been computed at the previous step
             Un(:,1:i_transient-1) = Sys.system_data.U(:,1:i_transient-1); %  previously computed inputs
             Xn(:,1:i_transient) = Sys.system_data.X(:, 1:i_transient);
-            pn(i_transient) = rob;
+            %pn(i_transient) = rob;
         else
-            pn(1:L) = rob*ones(1,L);
+            %pn(1:L) = rob*ones(1,L);
             donen(1:L-1) = 1;
             Un(:,1:L-1) = Sys.system_data.U(:,end-L+2:end);     %    previously computed inputs
             Xn(:,1:L) =   Sys.system_data.X(:,end-L+1:end);     %    previously computed temperatures
         end
         
-        for wx=1:nw
-            Wn(wx,:) = interp1( time , Wref(wx,:)', time_d)';
-        end
+%         for wx=1:nw
+%             Wn(wx,:) = interp1( time , Wref(wx,:)', time_d)';
+%         end
         
     end
-
+    function w_new= compute_w() 
+        % computes a random disturbance between w bounds 
+        dw = Sys.w_ub- Sys.w_lb;    
+        w_new = Wrefn(:,i_transient)+ dw'.*(2*rand(Sys.nw,1)-1)/3;        
+    end
 
 end
 

@@ -95,7 +95,7 @@ classdef hvac_room <STLC_lti
         
         function HR = update_plot(HR)
                 HR = plot_adversary(HR);
-    end
+        end
 end
 end
 

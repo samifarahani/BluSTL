@@ -95,7 +95,23 @@ end
 for k=1:2*L-1
         Fdyn = [Fdyn, Y(:,k) == Cd*X(:,k)+ Ddu*U(:,k) + Ddw * W(:,k)];
 end
-
+% % %% STL formula
+% % wlb = Sys.w_lb;
+% % wub = Sys.w_ub;
+% % 
+% % [Matrices,z,lbz,ubz] = get_MILP_matrices(Ad,Bdu,Bdw,nx,nu,nw,Wref,wlb,wub,L);
+% % 
+% % Cmpc = Matrices.Cmpc;
+% % Dmpc1 = Matrices.Dmpc1;
+% % Dmpc2 = Matrices.Dmpc2;
+% % Rmpc = Matrices.Rmpc;
+% % Empc = Matrices.Empc;
+% % Hmpc = Matrices.Hmpc;
+% % Fmpc = Matrices.Fmpc;
+% % Smpc = Matrices.Smpc;
+% % qmpc = Matrices.qmpc;
+% % CC2 = Matrices.CC2;
+% % Gmpc = Empc - Cmpc * x_prev;
 %% Objective function
 obj = min(Pphi(1:end-1,1));
 

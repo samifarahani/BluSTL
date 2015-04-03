@@ -1,4 +1,4 @@
-function [Sys, params] = STLC_run_adversarial(Sys, controller,adversary)
+function [Sys, params] = STLC_run_adversarial_mpt(Sys, controller)
 % STLC_run_adversarial      runs a receding horizon control problem 
 %                           for the system described by Sys, using the
 %                           provided controller and adversary optimizer
@@ -39,6 +39,12 @@ nx=Sys.nx;
 nw=Sys.nw;
 ny=Sys.ny;
 
+M = Sys.bigM; % big M
+
+
+% get environment spec constraints (so we only compute them once)
+[X_adv, Y_adv, U_adv, W_adv, Pstl, Fstl] = getSTL( Sys );
+
 % reference disturbance
 if isempty(Sys.Wref)
     Sys.Wref = 0*time;
@@ -47,7 +53,7 @@ Wref = Sys.Wref;
 for iwx=1:nw
     Wrefn(iwx,:) = interp1( time , Wref(iwx,:)', time_d)';
 end
-Wn = Wrefn;
+
 
 %% Make data nb_stages times longer
 nb_stages=Sys.nb_stages;
@@ -57,11 +63,11 @@ for istage = 0:nb_stages-1
 end
 time = ntime;
 Wref = repmat(Wref,1,Sys.nb_stages);
+Wn = Wrefn;
 
 
 %% Initialize discrete data for the controller and environment
 
-M = Sys.bigM; % big M
 donen = zeros(1,2*L-1); % done(1:k) = 1 iff everything has been computed up to step k
 pn = -1*M*ones(1,L);    % for activating robustness constraints
 Un = zeros(nu,2*L-1);
@@ -70,6 +76,7 @@ if (nx>0)
     Xn(:,1) = x0;           % only X0 is already computed
 end
 pn(1) = rob;
+
 
 Upred = zeros(nu,2*L-1);
 Xpred = zeros(nx,2*L);
@@ -99,13 +106,23 @@ Sys.model_data.time = time_d;
 Sys.model_data.X = repmat(0*time_d(1:end), [nx 1]);
 Sys.model_data.Y = repmat(0*time_d(1:end-1), [ny 1]);
 Sys.model_data.U = repmat(0*time_d(1:end-1), [nu 1]);
-Sys.model_data.W = Wn;
 
+
+% compute initial environment using explicit MPC
+[sol] =  compute_w();
+if StopRequest==1
+    return;
+end
 compute_input();
 
+
+Sys.model_data.W = Wn;
+
 u_new = Upred(:,i_transient);
-w_new =  compute_w();
-[x_new, y_new] =  system_step(Sys, x0, u_new, w_new);
+
+w_new = rand_w();
+
+[x_new, y_new] = system_step(Sys,x0, u_new, w_new);
 params{end+1} = {time_d,donen,pn,Xn,Un,Wn,Wrefn};
 i_past =  i_past+1;
 
@@ -114,7 +131,9 @@ Sys = update_plot(Sys);
 
 %% loop
 pause
-i_transient = i_transient+1;
+if i_transient < L
+    i_transient = i_transient+1;
+end
 while (time_d(end)+ts< time(end))
     % pause;
     x0 = x_new;
@@ -126,11 +145,18 @@ while (time_d(end)+ts< time(end))
     %% compute input for the next horizon
     
     tic;
+    [sol] = compute_w();
+    toc;
+    if StopRequest==1
+        break;
+    end
+    tic;
     compute_input();
     toc;
+    
     %% update states
     u_new = Upred(:,i_transient);
-    w_new = compute_w();
+    w_new = rand_w();
     
     [x_new, y_new] =  system_step(Sys, x0, u_new, w_new);
     params{end+1} = {time_d,donen,pn,Xn,Un,Wn,Wrefn};
@@ -152,47 +178,39 @@ end
 
     function compute_input()
         
-        for i=1:Sys.max_react_iter
+            Uopt = {};
+            Xopt = {};
+            Wopt = {};
+            Jopt = [];
             
             % controller's turn
-            [sol_control, errorflag1] = controller{{donen,pn,Xn,Un,Wn}};
-            if(errorflag1==0)  % found a good control
-                %disp(['Yalmip: ' yalmiperror(errorflag1)])
-                disp(['Yalmip: ' 'Found a good control input'])
-                Upred = sol_control{1};
-                Xpred = sol_control{2};
-            elseif (errorflag1==1 || errorflag1==15||errorflag1==12)  % some error, infeasibility or else
-                disp(['Yalmip error (disturbance too bad ?): ' yalmiperror(errorflag1)]); % probably there is no controller for this w
-                StopRequest=1;
-                break
-            else
-                disp(['Yalmip error: ' yalmiperror(errorflag1)]); % some other error
-                break
+            for i=1:size(sol{1}.Pn,2)
+                i
+                size(sol{1}.Pn,2)
+                A = full(sol{1}.Fi{i})
+                B = full(sol{1}.Gi{i})
+                [sol_control, errorflag1] = controller{{donen,pn,Xn,Un,A,B}};
+                if(errorflag1==0)  % found a good control
+                   disp(['Yalmip: ' yalmiperror(errorflag1)])
+                   %disp(['Yalmip: ' 'Found a good control input'])
+                   Uopt{i} = sol_control{1};
+                   Xopt{i} = sol_control{2};
+                   Wopt{i} = (sol{1}.Fi{i} * Uopt{i}' + sol{1}.Gi{i})';
+                   Jopt = [Jopt;min(sol_control{3})];
+                elseif (errorflag1==1 || errorflag1==15||errorflag1==12)  % some error, infeasibility or else
+                   disp(['Yalmip error (disturbance too bad ?): ' yalmiperror(errorflag1)]); % probably there is no controller for this w
+                   StopRequest=1;
+                   return;
+                else
+                   disp(['Yalmip error: ' yalmiperror(errorflag1)]); % some other error
+                   return;
+                end
+               
             end
-            
-            % adversary's turn
-            [sol_adversary, errorflag2] = adversary{{donen, pn, Xpred, Upred, Wrefn}}; %FIXME: what needs to go in here depends on the output of yalmip
-            
-            Wn = sol_adversary{1};
-            wcrob = sol_adversary{3};
-            
-           % fprintf('worst case robustness found: %g\n', wcrob(1));
-            
-            if(errorflag2==0 && wcrob(1) <= 0)  % found a bad disturbance
-                disp(['Yalmip: ' 'Found a bad disturbance'])
-            elseif(errorflag2==0 && wcrob(1) > 0) % no disturbance can violate specs
-                %fprintf('Control is good\n');
-                break;
-            elseif (errorflag2==true || errorflag2==15||errorflag2==12)  % some error, infeasibility or else
-                disp(['Yalmip error 1: ' yalmiperror(errorflag2)]);
-                StopRequest=true;
-                break
-            else
-                disp(['Yalmip error 2: ' yalmiperror(errorflag2)]); % some other error
-                StopRequest=true;
-                break
-            end
-        end
+
+            Upred = Uopt{find(Jopt==min(Jopt),1)};
+            Xpred = Xopt{find(Jopt==min(Jopt),1)};
+            %Wn = Wopt{find(Jopt==min(Jopt),1)};
                 
     end
 
@@ -245,11 +263,56 @@ end
         
     end
 
-    function w_new= compute_w() 
+    function w_new= rand_w() 
         % computes a random disturbance between w bounds 
         dw = Sys.w_ub- Sys.w_lb;    
         w_new = Wrefn(:,i_transient)+ dw'.*(2*rand(Sys.nw,1)-1)/3;        
     end
+
+
+    function [sol] = compute_w() 
+        fprintf('Starting MPT call...')
+        [sol] = STLC_get_adversary_mpt(Sys, X_adv, Y_adv, U_adv, W_adv, Pstl, Fstl, donen, Xn, Un, Wn, Wrefn);
+        fprintf('Done with mpt call...');
+    end
+
+
+    function [X, Y, U, W, Pstl, Fstl ] = getSTL( Sys )
+        % variables
+        X = sdpvar(nx, 2*L);
+        Y = sdpvar(ny, 2*L-1);
+        U = sdpvar(nu, 2*L-1);
+        W = sdpvar(nw, 2*L);
+
+        %% STL formula 
+        Fstl=[];         
+        Pstl = [];
+
+        varStd = struct('X',X,'Y',Y,'U',U, 'W', W);
+
+        if isstruct(Sys.var)
+            %remove overlapping fields from std
+            var = rmfield(varStd, intersect(fieldnames(Sys.var), fieldnames(varStd)));
+            keys = [fieldnames(var); fieldnames(Sys.var)];
+            var = cell2struct([struct2cell(varStd); struct2cell(Sys.var)], keys, 1);
+        else
+            var = varStd;
+        end
+
+        stl_list= STLC_parse_stl_labels(Sys);
+
+        Pphi=sdpvar(1,1);
+        for i = 1:numel(stl_list)
+            phi = STLformula('phi', stl_list{i});
+            [Fphi, Pphi] = STL2MILP_robust(phi, 2*L, ts, var, M);
+            Fstl = [Fstl Fphi];
+            Pstl = [Pstl,Pphi];
+        end
+    end
+
+
+
+
 
 
 end
